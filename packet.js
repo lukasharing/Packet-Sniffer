@@ -22,9 +22,13 @@ const SPECIAL = [
 	250, 251, 252, 253, 254, 255
 ];
 
+const SMAP = (new Array(0xFF)).fill(false);
+SPECIAL.forEach(i => SMAP[i] = true);
+
 module.exports = class Packet{
 
-	constructor(buffer = null){
+	constructor(parent, buffer = []){
+		this.analyzer = parent;
 
 		/* Port */
 		this.src_port = -1;
@@ -33,14 +37,33 @@ module.exports = class Packet{
 		this.src_host = -1;
 		this.dst_host = -1;
 		
-		this.uint8_packet = buffer;
-		this.length = buffer === null ? -1 : buffer.length;
+		this.uint8_packet = Buffer.from(buffer);
+		this.length = buffer.length;
 
     };
-    
-	corrupted(){ return (this.uint8_packet === null); };
-    mine(){ return (this.dst_host === HABBOPATH[LANG].host); };
+
+	merge(packet){
+		const merged = new Packet(this.parent);
+		// Source Information
+		merged.src_port = packet.src_port;
+		merged.dst_port = packet.dst_port;
+		// Host Information
+		merged.src_host = packet.src_host;
+		merged.dst_host = packet.dst_host;
+		// Data information
+		merged.uint8_packet = this.uint8_packet.concat(packet.uint8_packet);
+		merged.length = this.length + packet.length;
+		return merged;
+	}
+
+	empty(){ return (this.length <= 0); };
+    mine(){ return (this.dst_port === 30000); };
     header(){ return this.short(4); };
+	information(){
+		if(this.analyzer.hotel_version === "") return;
+
+		return (this.mine() ? this.analyzer.outgoing_packet_id : this.analyzer.incoming_packet_id)[this.header()];
+	};
 
 	// TCP uses BE, but I don't know the content
 	boolean(i){ return (this.uint8_packet.readUInt8(i) != 0); };
@@ -51,82 +74,121 @@ module.exports = class Packet{
 	string(i, l){ return this.uint8_packet.subarray(i, i + l).toString("latin1"); };
 
 	tcp(buffer, packet_received){
-		
-		// Packet Size - Header Size
-		const tcp_body_size = packet_received.info.totallen - packet_received.hdrlen;
-		
 		// Host
 		this.src_host = packet_received.info.srcaddr;
 		this.dst_host = packet_received.info.dstaddr;
 
 		// Decode with TCP algorithm
-		const decoded = Decoder.TCP(buffer, packet_received.offset);
+		const tcp = Decoder.TCP(buffer, packet_received.offset);
 
 		// Port
-		this.src_port = decoded.info.srcport;
-		this.dst_port = decoded.info.dstport;
+		this.src_port = tcp.info.srcport;
+		this.dst_port = tcp.info.dstport;
 
-		this.length = tcp_body_size;
-		
 		// Encrypted
 		this.is_encrypted = false;
+
+		// TCP Package Size (Total - Header1 - Header2)
+		this.length = packet_received.info.totallen - packet_received.hdrlen - tcp.hdrlen;
+
+		// Pointer to TCP Segment
+		const start_offset = tcp.offset;
+		const end_offset = tcp.offset + this.length;
 		
-		// If empty, just ignore it.
-		if(tcp_body_size === 0) return;
-
 		// Packet Buffer
-		this.uint8_packet = buffer.subarray(
-			packet_received.offset + decoded.hdrlen,
-			packet_received.offset + tcp_body_size
-		);
-
-		this.decode();
+		this.uint8_packet = buffer.subarray(start_offset, end_offset);
 	};
 
 	// Not used
 	udp(buffer, packet_received){};
 
-
-	decode(){
-		if(this.has_structure('s', 'b')){
-			this.string()
-		}
-	};
-
 	// Check if a package has a certain structure:
-	// Example s,i,b
-	// Types:
 	// 1. 's' -> String
 	// 2. 'i' -> Integer
 	// 3. 'u' -> uShort
 	// 4. 'b' -> byte
 	has_structure(...types){
 
+		// We start at index 6 because: 
+		// we know that it always starts with a packet id (Integer) + padding.
 		let index = 6;
-        types.forEach(type => {
 
+        types.forEach(type => {
 			if(index >= this.length) return false;
 
 			switch(type){
-				case 's': index += this.short(index) + 2; break; // Read String (2 bytes, 1 byte for type and 1 byte for string length)
-				case 'i': index += (4);                   break; // Read Integer (4 bytes, 1 for the type, 3 bytes for the integer)
-				case 'u': index += (2);                   break; // Read uShort (Byte) (2 bytes)
-				case 'b': index += (1);                   break; // Read boolean (1 Byte)
+				// String: 2 bytes + Content, [length, length, content....]
+				case 's':
+					// Check If we can read the string Length
+					if(index + 2 >= this.length) return false;
+					index += 2 + this.short(index);
+				break;
+				// Integer: 4 bytes, [int, int, int, int]
+				case 'i': index += 4;                         break;
+				// Short: 2 bytes, [short, short]
+				case 'u': index += 2;                         break;
+				// Byte: 1 bytes, [Byte]
+				case 'b': index += 1;                         break;
 			}
 
 		});
 		
-		// We reach the end, check if type is equal to the specified.
-		return index == (this.length - 1);
-    };
+		// If the position if the pointer reached exactly the end of the packet.
+		// There could be cases where this can give true but have a wrong structure.
+		return index == this.length;
+	};
 	
+	// Converts the package into array given a structure
+	toArray(...types){
+		if(!this.has_structure('s', 's', 'i', 'i')) return;
 
+		// As before, ingnore the index of the package
+		let index = 6;
+		let result = new Array();
+        types.forEach(type => {
+			switch(type){
+				// String: 2 bytes + Content, [length, length, content....]
+				case 's':
+					result.push(this.string(index + 2, this.short(index)));
+					index += 2 + this.short(index);
+				break;
+				// Integer: 4 bytes, [int, int, int, int]
+				case 'i':
+					result.push(this.integer(index));
+					index += 4;
+				break;
+				// Short: 2 bytes, [short, short]
+				case 'u':
+					result.push(this.short(index));
+					index += 2;
+				break;
+				// Byte: 1 bytes, [Byte]
+				case 'b':
+					result.push(this.byte(index));
+					index += 1;
+				break;
+			}
+		});
+		
+		return result;
+    };
 
 	toString(){
-		return `${this.mine() ? "Outgoing" : "Incoming"}[${this.header()}] <- `+
-			//`${Array.from(this.uint8_packet)}\n`+
-			`${Array.from(this.uint8_packet).map(e => SPECIAL.indexOf(e) >= 0 ? `[${e}]` : Buffer.from([e]).toString("latin1")).join('')}`;
-		;
+		if(this.length < 6) return "Wrong Package Size";
+		
+		let result = "";
+
+		const id = this.header();
+		const info = this.information();
+
+		result += this.mine() ? "Incoming" : "Outgoing";
+		result += (info === undefined) ? `[${id}]` : `[${info.name}]{${info.hash}}`;
+		
+		//result += `\n${Array.from(this.uint8_packet)}`;
+		result += `\n${Array.from(this.uint8_packet).map(e => SMAP[e] ? `[${e}]` : Buffer.from([e]).toString("latin1")).join('')}`;
+
+		return result;
+		
 	};
 
 	toExpression(){

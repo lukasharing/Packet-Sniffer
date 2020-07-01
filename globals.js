@@ -9,10 +9,7 @@ module.exports = {
     // Language
     LANG: "ES",
     HABBOPATH: {
-        "ES": {
-            host: ["52.5.80.70", "52.73.39.247"][1],
-            port: 30000
-        }
+        "ES": "game-es.habbo.com"
     },
 
     // Steps
@@ -29,7 +26,7 @@ module.exports = {
 
     // Cache
     CACHE: {
-        DISABLE: 0,
-        ENABLE: 1
+        DISABLED: 0,
+        ENABLED: 1
     }
 };

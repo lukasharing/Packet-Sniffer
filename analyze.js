@@ -3,58 +3,77 @@ const {STEPS, QUEUE, CACHE} = require("./globals");
 const Packet  = require("./packet");
 
 const fetch = require("node-fetch");
-const fetch_api_harble = version => fetch(`https://api.harble.net/messages/${version}.json`);
+const api_harble = version => `https://api.harble.net/messages/${version}.json`;
 
 module.exports = class Analyzer{
 
-    constructor(){
+    constructor(_socket){
+
+        this.socket = _socket;
 
         this.hotel_version_regex = new RegExp("PRODUCTION-([0-9]{12})-([0-9]{9})");
         this.hotel_version = "PRODUCTION-202004202209-858580280"; // Dummy, remove it!
-        this.tcp_translation_table = null;
+        
+        // Id- Hash - Name -> Table
+        this.incoming_packet_id = {};
+        this.outgoing_packet_id = {};
 
+        // Stack
         this.cache_queue = [];
-        this.cache_status = CACHE.ENABLE;
-        this.cache_max_size = 5;
+        this.cache_status = CACHE.ENABLED;
+        this.cache_max_size = 10;
 
         this.packets_queue = [];
         this.queue_mode = QUEUE.SKIP;
 
         // Current Step
-        this.current_step = STEPS.HOTEL_VERSION;
+        this.current_step = STEPS.KEY_DECRYPTION; //STEPS.HOTEL_VERSION;
+        this.hotel_version = "";
     };
 
-    analyze_hotel_version_packet(packet){
+    // Work asynchronously so we keep tracking more packets
+    async analyze_hotel_version_packet(packet){
+        try{
+            const structure = packet.toArray('s', 's', 'i', 'i');
+            if(structure instanceof Array){
+                // Check if the first string has the following content
+                if(!/^PRODUCTION-[0-9]{12}-[0-9]{9}$/.test(structure[0])) return;
 
-        //console.log(packet.toString());
-        //console.log(packet.header());
-        //console.log(packet.has_structure('s', 's', 'i', 'i'));
-        
-        if(false){
-            const self = this;
+                this.hotel_version = structure[0];
 
-            this.queue_mode = QUEUE.WAIT;
-
-            dummy();
-            // Work asynchronously so we keep tracking more packets
-            async function dummy(){
-                await fetch_api_harble(self.hotel_version).then(async response => {
-
+                this.queue_mode = QUEUE.WAIT;
+                const appi_path = api_harble(this.hotel_version);
+                console.log(`Fetching Hash Table from: ${appi_path}`);
+                await fetch(appi_path).then(async response => {
                     if(!response.ok) throw Error(response.statusText);
-
                     // Fetch Result to the table
                     await response.json().then(result => {
-                        self.tcp_translation_table = result;
+                        // Habbo Incoming Packet Information
+                        result.Incoming.forEach(info => {
+                            this.incoming_packet_id[info.Id] = {
+                                name: info.Name,
+                                hash: info.Hash
+                            };
+                        });
+                        // Habbo Outgoing Packet Information
+                        result.Outgoing.forEach(info => {
+                            this.outgoing_packet_id[info.Id] = {
+                                name: info.Name,
+                                hash: info.Hash
+                            };
+                        });
+
                         // Next Step
-                        self.current_step = STEPS.KEY_DECRYPTION;
-
+                        this.current_step = STEPS.KEY_DECRYPTION;
                         // Start Analyzing
-                        self.queue_mode = QUEUE.SKIP;
-                        self.analyze(null);
-                    });
+                        this.queue_mode = QUEUE.SKIP;
 
-                }).catch(error => console.error(`Version Fetch: ${error}`));
+                        this.analyze(null);
+                    });
+                });
             }
+        }catch(error) {
+            console.error(`Version Fetch: ${error}`);
         }
     };
 
@@ -83,12 +102,16 @@ module.exports = class Analyzer{
         switch(this.current_step){
 
             case STEPS.HOTEL_VERSION : this.analyze_hotel_version_packet(packet); break;
-            case STEPS.KEY_DECRYPTION: this.analyze_key_decryption_packet(packet); break;
+            //case STEPS.KEY_DECRYPTION: this.analyze_key_decryption_packet(packet); break;
 
         }
 
+        if(this.current_step != STEPS.HOTEL_VERSION){
+            this.emmit(packet);
+        }
+
         // Cache Last Packet
-        if(this.cache_status == CACHE.ENABLE){
+        if(this.cache_status == CACHE.ENABLED){
             this.cache_queue.push(packet);
             // Just take out last element
             if(this.cache_queue.length >= this.cache_max_size){
@@ -103,5 +126,55 @@ module.exports = class Analyzer{
 
     };
 
+    combine_until(packet_name){
+
+        // Ignore Last
+        const idx = this.cache_queue.length - 2;
+        const to_merge = [];
+        to_merge.unshift(this.cache_queue[idx]);
+
+        let last_information = to_merge[0].information();
+        while(last_information == null || (last_information != null && last_information.name != packet_name)){
+            to_merge.unshift(this.cache_queue[idx]);
+            last_information = to_merge[0].information();
+        }
+        this.cache_queue;
+
+    };
+
+    emmit(packet){
+        if(packet === null) return;
+        // 
+        if(null){}
+
+        console.log("------------------");
+        if(packet.mine()){
+        console.log(packet.toString());
+        //if( a != -1 && b != -1 && ((a == (b + 1)) || (b == (a + 1)))){
+            //console.log(packet.toString());
+            //console.log(packet.mine() ? "Mine" : "Server", packet.length);
+
+        //}
+        
+        //console.log("------------------");
+        /*switch(packet_info.name){
+            case "RoomUsers":
+
+                console.log("Fetch");
+        this.cache_queue = [];
+                const packet = this.combine_until("RoomRelativeMap");
+                console.log(packet.toString());
+                //socket.emit("RoomRelativeMap", packet);
+
+            break;
+        };*/
+
+
+
+    }
 
 }
+
+2056
+
+4,67,225,99,60,216,210,121,168,32

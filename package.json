@@ -1,0 +1,11 @@
+{
+    "name": "Habbo Packet Sniffer",
+    "version": "1.0.0",
+    "description": "",
+    "main": "connect.js",
+    "scripts":{
+        
+    },
+    "keywords": [],
+    "author": ["Lukas Häring Garcías"]
+}
